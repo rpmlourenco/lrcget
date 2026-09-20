@@ -19,6 +19,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install frontend dependencies
         run: npm install
+      - name: Build frontend for Tauri checks
+        run: npm run build
       - name: Check Rust backend
         working-directory: src-tauri
         run: cargo check
