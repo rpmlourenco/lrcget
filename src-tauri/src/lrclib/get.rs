@@ -156,6 +156,19 @@ fn artist_variants(artist_name: &str) -> Vec<String> {
         .collect()
 }
 
+fn title_without_parentheses(title: &str) -> Option<String> {
+    let parentheses = Regex::new(r"\([^)]*\)").unwrap();
+    if !parentheses.is_match(title) {
+        return None;
+    }
+    let stripped = parentheses
+        .replace_all(title, " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    (!stripped.is_empty() && stripped != title).then_some(stripped)
+}
+
 pub async fn request_raw(
     title: &str,
     album_name: &str,
@@ -179,10 +192,24 @@ pub async fn request_raw(
     let mut artists = vec![artist_name.to_owned()];
     artists.extend(artist_variants(artist_name));
     artists.dedup();
-    for artist in artists {
-        match super::search::request(title, "", &artist, "", lrclib_instance).await {
+    for artist in &artists {
+        match super::search::request(title, "", artist, "", lrclib_instance).await {
             Ok(results) => candidates.extend(results.into_items()),
             Err(error) => search_error = Some(error),
+        }
+    }
+    let exact_synced_candidate = candidates.iter().any(|item| {
+        duration_tier(item.duration, duration) == 0
+            && has_synced_lyrics(item.synced_lyrics.as_deref(), item.lyricsfile.as_deref())
+            && item.name.as_deref().is_some_and(|name| normalize_name(name) == normalize_name(title))
+            && item.artist_name.as_deref().is_some_and(|name| normalize_artist(name) == normalize_artist(artist_name))
+    });
+    if let Some(stripped_title) = title_without_parentheses(title).filter(|_| !exact_synced_candidate) {
+        for artist in &artists {
+            match super::search::request(&stripped_title, "", artist, "", lrclib_instance).await {
+                Ok(results) => candidates.extend(results.into_items()),
+                Err(error) => search_error = Some(error),
+            }
         }
     }
     let mut fallback = select_fallback(candidates, title, album_name, artist_name, duration);
@@ -256,14 +283,19 @@ fn select_fallback(
     duration: f64,
 ) -> Option<RawResponse> {
     let normalized_artist = normalize_artist(artist_name);
-    let normalized_title = normalize_name(title);
-    if normalized_title.is_empty() || normalized_artist.is_empty() {
+    let mut normalized_titles = vec![normalize_name(title)];
+    if let Some(stripped) = title_without_parentheses(title) {
+        normalized_titles.push(normalize_name(&stripped));
+    }
+    if normalized_titles[0].is_empty() || normalized_artist.is_empty() {
         return None;
     }
     let mut ranked = candidates.into_iter().filter_map(|item| {
-        if !item.name.as_deref().is_some_and(|name| normalize_name(name) == normalized_title)
-            || !item.artist_name.as_deref().is_some_and(|name| normalize_artist(name) == normalized_artist)
-        {
+        let title_rank = item.name.as_deref().and_then(|name| {
+            let normalized = normalize_name(name);
+            normalized_titles.iter().position(|title| title == &normalized)
+        })?;
+        if !item.artist_name.as_deref().is_some_and(|name| normalize_artist(name) == normalized_artist) {
             return None;
         }
         let has_lyrics = item.plain_lyrics.as_ref().is_some_and(|text| !text.is_empty())
@@ -280,10 +312,10 @@ fn select_fallback(
         }
         let has_synced = has_synced_lyrics(item.synced_lyrics.as_deref(), item.lyricsfile.as_deref());
         let album_mismatch = !item.album_name.as_deref().is_some_and(|name| name.eq_ignore_ascii_case(album_name));
-        Some((tier, !has_synced, album_mismatch, difference.unwrap_or(f64::MAX), item))
+        Some((tier, !has_synced, title_rank, album_mismatch, difference.unwrap_or(f64::MAX), item))
     }).collect::<Vec<_>>();
-    ranked.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)).then_with(|| a.2.cmp(&b.2)).then_with(|| a.3.total_cmp(&b.3)));
-    ranked.into_iter().next().map(|(tier, _, _, _, item)| RawResponse {
+    ranked.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)).then_with(|| a.2.cmp(&b.2)).then_with(|| a.3.cmp(&b.3)).then_with(|| a.4.total_cmp(&b.4)));
+    ranked.into_iter().next().map(|(tier, _, _, _, _, item)| RawResponse {
         plain_lyrics: item.plain_lyrics,
         synced_lyrics: if tier == 2 { None } else { item.synced_lyrics },
         lyricsfile: if tier == 2 { None } else { item.lyricsfile },
@@ -319,7 +351,7 @@ pub async fn request(
 
 #[cfg(test)]
 mod tests {
-    use super::{artist_variants, choose_response, select_fallback, RawResponse};
+    use super::{artist_variants, choose_response, select_fallback, title_without_parentheses, RawResponse};
     use crate::lrclib::search::SearchItem;
 
     fn candidate(duration: f64, artist: &str) -> SearchItem {
@@ -406,5 +438,13 @@ mod tests {
         let mut item = candidate(200.0, "Singer");
         item.name = Some("Don’t Stop".to_owned());
         assert!(select_fallback(vec![item], "Don't Stop", "Album", "Singer", 200.0).is_some());
+    }
+
+    #[test]
+    fn parenthetical_title_has_a_stripped_fallback() {
+        assert_eq!(title_without_parentheses("Song (Live) (Remastered)"), Some("Song".to_owned()));
+        assert_eq!(title_without_parentheses("Song"), None);
+        let result = select_fallback(vec![candidate(200.0, "Singer")], "Song (Live)", "Album", "Singer", 200.0);
+        assert!(result.is_some());
     }
 }
