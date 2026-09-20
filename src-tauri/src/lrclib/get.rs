@@ -265,7 +265,7 @@ fn has_synced_lyrics(synced: Option<&str>, lyricsfile: Option<&str>) -> bool {
 fn duration_tier(candidate: Option<f64>, wanted: f64) -> u8 {
     match candidate {
         Some(value) if value.round() == wanted.round() => 0,
-        Some(value) if (value - wanted).abs() < 3.0 => 1,
+        Some(value) if (value - wanted).abs() < 5.0 => 1,
         _ => 2,
     }
 }
@@ -298,7 +298,13 @@ fn select_fallback(
     let mut ranked = candidates.into_iter().filter_map(|item| {
         let title_rank = item.name.as_deref().and_then(|name| {
             let normalized = normalize_name(name);
-            normalized_titles.iter().position(|title| title == &normalized)
+            normalized_titles.iter().position(|title| title == &normalized).or_else(|| {
+                title_without_parentheses(name).and_then(|stripped| {
+                    let normalized = normalize_name(&stripped);
+                    normalized_titles.iter().position(|title| title == &normalized)
+                        .map(|rank| rank + normalized_titles.len())
+                })
+            })
         })?;
         if !item.artist_name.as_deref().is_some_and(|name| normalize_artist(name) == normalized_artist) {
             return None;
@@ -393,10 +399,12 @@ mod tests {
     }
 
     #[test]
-    fn fallback_accepts_under_three_seconds_then_plain_only() {
+    fn fallback_accepts_under_five_seconds_then_plain_only() {
         let near = select_fallback(vec![candidate(202.9, "A plus B")], "Song", "Album", "A & B", 200.0).unwrap();
         assert!(near.synced_lyrics.is_some());
-        let far = select_fallback(vec![candidate(203.0, "A plus B")], "Song", "Album", "A & B", 200.0).unwrap();
+        let four_seconds = select_fallback(vec![candidate(204.0, "A plus B")], "Song", "Album", "A & B", 200.0).unwrap();
+        assert!(four_seconds.synced_lyrics.is_some());
+        let far = select_fallback(vec![candidate(205.0, "A plus B")], "Song", "Album", "A & B", 200.0).unwrap();
         assert_eq!(far.plain_lyrics.as_deref(), Some("plain"));
         assert!(far.synced_lyrics.is_none());
         assert!(far.lyricsfile.is_none());
@@ -406,7 +414,7 @@ mod tests {
     fn fallback_rejects_unmatched_or_unusable_results() {
         let mut wrong_title = candidate(200.0, "A & B");
         wrong_title.name = Some("Different song".to_owned());
-        let mut no_plain = candidate(203.0, "A & B");
+        let mut no_plain = candidate(205.0, "A & B");
         no_plain.plain_lyrics = None;
         assert!(select_fallback(vec![wrong_title, no_plain], "Song", "Album", "A & B", 200.0).is_none());
     }
@@ -481,5 +489,13 @@ mod tests {
         assert_eq!(title_without_parentheses("Song"), None);
         let result = select_fallback(vec![candidate(200.0, "Singer")], "Song (Live)", "Album", "Singer", 200.0);
         assert!(result.is_some());
+    }
+
+    #[test]
+    fn parenthetical_result_matches_plain_local_title() {
+        let mut item = candidate(280.0, "George Michael");
+        item.name = Some("Feeling Good (Live)".to_owned());
+        let result = select_fallback(vec![item], "Feeling Good", "Symphonica", "George Michael", 280.0);
+        assert!(result.unwrap().synced_lyrics.is_some());
     }
 }
