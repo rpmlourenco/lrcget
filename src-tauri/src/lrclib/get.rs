@@ -193,6 +193,12 @@ pub async fn request_raw(
     artists.extend(artist_variants(artist_name));
     artists.dedup();
     for artist in &artists {
+        if !album_name.is_empty() {
+            match super::search::request(title, album_name, artist, "", lrclib_instance).await {
+                Ok(results) => candidates.extend(results.into_items()),
+                Err(error) => search_error = Some(error),
+            }
+        }
         match super::search::request(title, "", artist, "", lrclib_instance).await {
             Ok(results) => candidates.extend(results.into_items()),
             Err(error) => search_error = Some(error),
@@ -266,10 +272,9 @@ fn duration_tier(candidate: Option<f64>, wanted: f64) -> u8 {
 
 fn choose_response(exact: Option<RawResponse>, fallback: Option<RawResponse>, duration: f64) -> Option<RawResponse> {
     match (exact, fallback) {
-        (Some(exact), Some(fallback))
+        (Some(_exact), Some(fallback))
             if has_synced_lyrics(fallback.synced_lyrics.as_deref(), fallback.lyricsfile.as_deref())
-                && duration_tier(fallback.duration, duration) <= 1
-                && duration_tier(fallback.duration, duration) <= duration_tier(exact.duration, duration) => Some(fallback),
+                && duration_tier(fallback.duration, duration) <= 1 => Some(fallback),
         (Some(exact), _) => Some(exact),
         (None, fallback) => fallback,
     }
@@ -311,11 +316,12 @@ fn select_fallback(
             return None;
         }
         let has_synced = has_synced_lyrics(item.synced_lyrics.as_deref(), item.lyricsfile.as_deref());
+        let lyrics_rank = if has_synced && tier <= 1 { tier } else { 2 };
         let album_mismatch = !item.album_name.as_deref().is_some_and(|name| name.eq_ignore_ascii_case(album_name));
-        Some((tier, !has_synced, title_rank, album_mismatch, difference.unwrap_or(f64::MAX), item))
+        Some((lyrics_rank, title_rank, album_mismatch, tier, difference.unwrap_or(f64::MAX), item))
     }).collect::<Vec<_>>();
     ranked.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)).then_with(|| a.2.cmp(&b.2)).then_with(|| a.3.cmp(&b.3)).then_with(|| a.4.total_cmp(&b.4)));
-    ranked.into_iter().next().map(|(tier, _, _, _, _, item)| RawResponse {
+    ranked.into_iter().next().map(|(_, _, _, tier, _, item)| RawResponse {
         plain_lyrics: item.plain_lyrics,
         synced_lyrics: if tier == 2 { None } else { item.synced_lyrics },
         lyricsfile: if tier == 2 { None } else { item.lyricsfile },
@@ -431,6 +437,35 @@ mod tests {
         let chosen = choose_response(Some(plain), fallback, 222.0).unwrap();
         assert_eq!(chosen.duration, Some(222.0));
         assert!(chosen.synced_lyrics.is_some());
+    }
+
+    #[test]
+    fn nearby_synced_match_beats_exact_duration_plain_match() {
+        let mut plain = candidate(846.60775, "Dave Matthews Band");
+        plain.name = Some("#41".to_owned());
+        plain.album_name = Some("The Gorge".to_owned());
+        plain.synced_lyrics = None;
+        let mut synced = candidate(846.0, "Dave Matthews Band");
+        synced.name = Some("#41".to_owned());
+        synced.album_name = Some("The Gorge (LTD ED)".to_owned());
+        let fallback = select_fallback(
+            vec![plain, synced], "#41", "The Gorge", "Dave Matthews Band", 846.60775,
+        );
+        let chosen = choose_response(None, fallback, 846.60775).unwrap();
+        assert_eq!(chosen.duration, Some(846.0));
+        assert!(chosen.synced_lyrics.is_some());
+    }
+
+    #[test]
+    fn nearby_synced_match_replaces_plain_get_result() {
+        let mut plain = candidate(846.60775, "Dave Matthews Band");
+        plain.name = Some("#41".to_owned());
+        plain.synced_lyrics = None;
+        let exact = select_fallback(vec![plain], "#41", "The Gorge", "Dave Matthews Band", 846.60775);
+        let mut synced = candidate(846.0, "Dave Matthews Band");
+        synced.name = Some("#41".to_owned());
+        let fallback = select_fallback(vec![synced], "#41", "The Gorge", "Dave Matthews Band", 846.60775);
+        assert!(choose_response(exact, fallback, 846.60775).unwrap().synced_lyrics.is_some());
     }
 
     #[test]

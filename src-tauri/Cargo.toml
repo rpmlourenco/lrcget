@@ -36,7 +36,7 @@ data-encoding = "2.4.0"
 kira = "0.12.0"
 symphonia = { version = "0.5.4", features = ["all"] }
 regex = "1.10.4"
-charabia = "0.9.9"
+charabia = { version = "0.9.9", default-features = false, features = ["chinese", "hebrew", "thai", "greek", "khmer", "vietnamese", "swedish-recomposition", "turkish", "german-segmentation"] }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 tauri-plugin-os = "2.3.2"
 tauri-plugin-shell = "2.3.5"
@@ -49,10 +49,13 @@ tauri-plugin-webdriver = "0.2"
 [features]
 # by default Tauri runs in production mode
 # when `tauri dev` runs it is executed with `cargo run --no-default-features` if `devPath` is an URL
-default = [ "custom-protocol" ]
+default = [ "custom-protocol", "dictionary-segmentation" ]
 # this feature is used used for production builds where `devPath` points to the filesystem
 # DO NOT remove this
 custom-protocol = [ "tauri/custom-protocol" ]
+# Tauri dev disables default features. Keep its build independent of Lindera's
+# external dictionary downloads while retaining Japanese/Korean segmentation in releases.
+dictionary-segmentation = [ "charabia/japanese", "charabia/korean" ]
 
 [profile.dev.package.kira]
 opt-level = 3

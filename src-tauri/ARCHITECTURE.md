@@ -18,6 +18,8 @@
 
 **Word Segmentation Command:** `segment_words(text)` in `main.rs` uses Charabia's segmenter (`Segment::segment_str`) and then applies language-agnostic post-processing: segments containing at least one letter/number are kept as tokens, while separator-only segments (spaces/punctuation/symbols) are merged into adjacent tokens.
 
+`tauri dev` builds without Cargo default features and therefore omits Charabia's Japanese and Korean Lindera dictionaries, whose build scripts download data from `lindera.dev`. Release builds enable the `dictionary-segmentation` default feature and retain those language-specific segmenters.
+
 ## Project Structure
 
 ```
@@ -256,7 +258,7 @@ pub fn format_timestamp(timestamp_ms: i64) -> String;
 
 **Endpoints:** search, get, get_by_id, publish, flag, request_challenge
 
-Lyrics retrieval first tries `/api/get` with the track's full metadata. If that returns no lyrics, only plain text, or HTTP 400, it searches by title and artist without album, including `&`/`and`/`+`/`plus` artist variants. When the title contains parentheses, it also searches without the parenthesized text. A normalized title query is tried when punctuation prevents any suitable match. Title and artist matching ignores punctuation differences, including apostrophe styles and commas. Candidates with matching durations (rounded to seconds) take priority, followed by durations less than three seconds apart; synced lyrics win ties, with the original title preferred over the stripped one at the same tier. More distant results can supply plain text only, and a nearby synced result can replace an existing plain result only when its duration tier is at least as close. Read-only LRCLIB requests retry transient network, server, and response decoding failures up to three times. API error bodies support LRCLIB's `name`/`statusCode` fields.
+Lyrics retrieval first tries `/api/get` with the track's full metadata. If that returns no lyrics, only plain text, or HTTP 400, it searches by title and artist both with the album and without it, including `&`/`and`/`+`/`plus` artist variants. The album query narrows LRCLIB's limited result set while still finding alternate editions. When the title contains parentheses, it also searches without the parenthesized text. A normalized title query is tried when punctuation prevents any suitable match. Title and artist matching ignores punctuation differences, including apostrophe styles and commas. Synced candidates with matching durations (rounded to seconds) take priority, followed by synced candidates less than three seconds apart; plain text is used only after both tiers fail. The original title is preferred over the stripped one within a tier. Read-only LRCLIB requests retry transient network, server, and response decoding failures up to three times. API error bodies support LRCLIB's `name`/`statusCode` fields.
 
 **Challenge-Response (publish/flag):**
 1. Request challenge → prefix + target hash
