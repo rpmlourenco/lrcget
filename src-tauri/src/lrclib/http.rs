@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use reqwest::{header::{HeaderValue, RETRY_AFTER}, Client, StatusCode, Url};
+use reqwest::{Client, StatusCode, Url};
 use serde_json::Value;
 use thiserror::Error;
 
@@ -38,12 +38,8 @@ fn retryable_status(status: StatusCode) -> bool {
         || status.is_server_error()
 }
 
-fn retry_delay(attempt: usize, retry_after: Option<&HeaderValue>) -> Duration {
-    let suggested_seconds = retry_after
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(0);
-    Duration::from_secs((2_u64 << attempt).max(suggested_seconds).min(30))
+fn retry_delay(attempt: usize) -> Duration {
+    Duration::from_millis(250 * (attempt as u64 + 1))
 }
 
 /// Retry only read-only requests and transient transport/server failures.
@@ -54,7 +50,7 @@ pub async fn get_json(client: &Client, url: Url) -> Result<(StatusCode, Value)> 
             Ok(response) => {
                 let status = response.status();
                 if attempt < 2 && retryable_status(status) {
-                    tokio::time::sleep(retry_delay(attempt, response.headers().get(RETRY_AFTER))).await;
+                    tokio::time::sleep(retry_delay(attempt)).await;
                     continue;
                 }
                 if status == StatusCode::NOT_FOUND {
@@ -63,13 +59,13 @@ pub async fn get_json(client: &Client, url: Url) -> Result<(StatusCode, Value)> 
                 match response.json::<Value>().await {
                     Ok(body) => return Ok((status, body)),
                     Err(error) if attempt < 2 && (error.is_body() || error.is_decode() || error.is_timeout()) => {
-                        tokio::time::sleep(retry_delay(attempt, None)).await;
+                        tokio::time::sleep(retry_delay(attempt)).await;
                     }
                     Err(error) => return Err(error.into()),
                 }
             }
             Err(error) if attempt < 2 && (error.is_connect() || error.is_timeout() || error.is_body() || error.is_request()) => {
-                tokio::time::sleep(retry_delay(attempt, None)).await;
+                tokio::time::sleep(retry_delay(attempt)).await;
             }
             Err(error) => return Err(error.into()),
         }
@@ -80,7 +76,7 @@ pub async fn get_json(client: &Client, url: Url) -> Result<(StatusCode, Value)> 
 #[cfg(test)]
 mod tests {
     use super::{api_error, retry_delay, retryable_status};
-    use reqwest::{header::HeaderValue, StatusCode};
+    use reqwest::StatusCode;
     use serde_json::json;
     use std::time::Duration;
 
@@ -94,13 +90,12 @@ mod tests {
     }
 
     #[test]
-    fn server_busy_retries_after_at_least_two_seconds() {
+    fn server_busy_retries_with_short_delays() {
         assert!(retryable_status(StatusCode::SERVICE_UNAVAILABLE));
         assert!(retryable_status(StatusCode::INTERNAL_SERVER_ERROR));
         assert!(retryable_status(StatusCode::TOO_MANY_REQUESTS));
         assert!(!retryable_status(StatusCode::BAD_REQUEST));
-        let retry_after = HeaderValue::from_static("1");
-        assert_eq!(retry_delay(0, Some(&retry_after)), Duration::from_secs(2));
-        assert_eq!(retry_delay(1, None), Duration::from_secs(4));
+        assert_eq!(retry_delay(0), Duration::from_millis(250));
+        assert_eq!(retry_delay(1), Duration::from_millis(500));
     }
 }
