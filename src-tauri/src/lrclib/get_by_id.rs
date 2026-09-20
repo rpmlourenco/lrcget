@@ -65,7 +65,7 @@ pub struct ResponseError {
     message: String,
 }
 
-async fn make_request(id: i64, lrclib_instance: &str) -> Result<reqwest::Response> {
+async fn make_request(id: i64, lrclib_instance: &str) -> Result<(reqwest::StatusCode, serde_json::Value)> {
     let version = env!("CARGO_PKG_VERSION");
     let user_agent = format!(
         "LRCGET v{} (https://github.com/tranxuanthang/lrcget)",
@@ -76,15 +76,15 @@ async fn make_request(id: i64, lrclib_instance: &str) -> Result<reqwest::Respons
         .user_agent(user_agent)
         .build()?;
     let api_endpoint = format!("{}/api/get/{}", lrclib_instance.trim_end_matches('/'), id);
-    Ok(client.get(&api_endpoint).send().await?)
+    super::http::get_json(&client, reqwest::Url::parse(&api_endpoint)?).await
 }
 
 pub async fn request_raw(id: i64, lrclib_instance: &str) -> Result<RawResponse> {
-    let res = make_request(id, lrclib_instance).await?;
+    let (status, body) = make_request(id, lrclib_instance).await?;
 
-    match res.status() {
+    match status {
         reqwest::StatusCode::OK => {
-            let lrclib_response = res.json::<RawResponse>().await?;
+            let lrclib_response = serde_json::from_value::<RawResponse>(body)?;
 
             if lrclib_response.synced_lyrics.is_some()
                 || lrclib_response.plain_lyrics.is_some()
@@ -112,7 +112,7 @@ pub async fn request_raw(id: i64, lrclib_instance: &str) -> Result<RawResponse> 
         reqwest::StatusCode::BAD_REQUEST
         | reqwest::StatusCode::SERVICE_UNAVAILABLE
         | reqwest::StatusCode::INTERNAL_SERVER_ERROR => {
-            let error = res.json::<ResponseError>().await?;
+            let error = serde_json::from_value::<ResponseError>(body)?;
             Err(error.into())
         }
 
@@ -126,11 +126,11 @@ pub async fn request_raw(id: i64, lrclib_instance: &str) -> Result<RawResponse> 
 }
 
 pub async fn request(id: i64, lrclib_instance: &str) -> Result<Response> {
-    let res = make_request(id, lrclib_instance).await?;
+    let (status, body) = make_request(id, lrclib_instance).await?;
 
-    match res.status() {
+    match status {
         reqwest::StatusCode::OK => {
-            let lrclib_response = res.json::<RawResponse>().await?;
+            let lrclib_response = serde_json::from_value::<RawResponse>(body)?;
 
             Ok(Response::from_raw_response(lrclib_response))
         }
@@ -140,7 +140,7 @@ pub async fn request(id: i64, lrclib_instance: &str) -> Result<Response> {
         reqwest::StatusCode::BAD_REQUEST
         | reqwest::StatusCode::SERVICE_UNAVAILABLE
         | reqwest::StatusCode::INTERNAL_SERVER_ERROR => {
-            let error = res.json::<ResponseError>().await?;
+            let error = serde_json::from_value::<ResponseError>(body)?;
             Err(error.into())
         }
 

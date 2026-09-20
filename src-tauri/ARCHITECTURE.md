@@ -256,6 +256,8 @@ pub fn format_timestamp(timestamp_ms: i64) -> String;
 
 **Endpoints:** search, get, get_by_id, publish, flag, request_challenge
 
+Lyrics retrieval first tries `/api/get` with the track's full metadata. If that returns no lyrics, it searches by title and artist without album, including `&`/`and`/`+`/`plus` artist variants. Candidates must match the title and artist; matching durations (rounded to seconds) take priority, followed by durations less than three seconds apart. More distant results can supply plain text only. Read-only LRCLIB requests retry transient network, server, and response decoding failures up to three times.
+
 **Challenge-Response (publish/flag):**
 1. Request challenge → prefix + target hash
 2. Solve PoW (SHA256): find nonce where hash(prefix+nonce) < target

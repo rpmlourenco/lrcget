@@ -7,20 +7,26 @@ use thiserror::Error;
 
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct SearchItem {
-    id: i64,
-    name: Option<String>,
-    artist_name: Option<String>,
-    album_name: Option<String>,
-    duration: Option<f64>,
-    instrumental: bool,
-    plain_lyrics: Option<String>,
-    synced_lyrics: Option<String>,
-    lyricsfile: Option<String>,
+pub(crate) struct SearchItem {
+    pub(crate) id: i64,
+    pub(crate) name: Option<String>,
+    pub(crate) artist_name: Option<String>,
+    pub(crate) album_name: Option<String>,
+    pub(crate) duration: Option<f64>,
+    pub(crate) instrumental: bool,
+    pub(crate) plain_lyrics: Option<String>,
+    pub(crate) synced_lyrics: Option<String>,
+    pub(crate) lyricsfile: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
 pub struct Response(Vec<SearchItem>);
+
+impl Response {
+    pub(crate) fn into_items(self) -> Vec<SearchItem> {
+        self.0
+    }
+}
 
 #[derive(Error, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -38,12 +44,15 @@ pub async fn request(
     q: &str,
     lrclib_instance: &str,
 ) -> Result<Response> {
-    let params: Vec<(String, String)> = vec![
-        ("track_name".to_owned(), title.to_owned()),
-        ("artist_name".to_owned(), artist_name.to_owned()),
-        ("album_name".to_owned(), album_name.to_owned()),
-        ("q".to_owned(), q.to_owned()),
-    ];
+    let params: Vec<(&str, &str)> = [
+        ("track_name", title),
+        ("artist_name", artist_name),
+        ("album_name", album_name),
+        ("q", q),
+    ]
+    .into_iter()
+    .filter(|(_, value)| !value.is_empty())
+    .collect();
 
     let version = env!("CARGO_PKG_VERSION");
     let user_agent = format!(
@@ -56,18 +65,18 @@ pub async fn request(
         .build()?;
     let api_endpoint = format!("{}/api/search", lrclib_instance.trim_end_matches('/'));
     let url = reqwest::Url::parse_with_params(&api_endpoint, &params)?;
-    let res = client.get(url).send().await?;
+    let (status, body) = super::http::get_json(&client, url).await?;
 
-    match res.status() {
+    match status {
         reqwest::StatusCode::OK => {
-            let lrclib_response = res.json::<Response>().await?;
+            let lrclib_response = serde_json::from_value::<Response>(body)?;
             Ok(lrclib_response)
         }
 
         reqwest::StatusCode::BAD_REQUEST
         | reqwest::StatusCode::SERVICE_UNAVAILABLE
         | reqwest::StatusCode::INTERNAL_SERVER_ERROR => {
-            let error = res.json::<ResponseError>().await?;
+            let error = serde_json::from_value::<ResponseError>(body)?;
             Err(error.into())
         }
 
