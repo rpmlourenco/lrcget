@@ -155,7 +155,14 @@ fn artist_variants(artist_name: &str) -> Vec<String> {
     }
     ["and", "&", "plus", "+"]
         .iter()
-        .map(|replacement| separator.replace_all(artist_name, *replacement).into_owned())
+        .map(|replacement| {
+            let padded = format!(" {replacement} ");
+            separator
+                .replace_all(artist_name, padded.as_str())
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
         .filter(|variant| variant != artist_name)
         .collect()
 }
@@ -194,7 +201,7 @@ pub async fn request_raw(
 fn normalize_artist(name: &str) -> String {
     let separator = Regex::new(r"(?i)\b(?:and|plus)\b|[&+]").unwrap();
     separator
-        .replace_all(&name.to_lowercase(), "and")
+        .replace_all(&name.to_lowercase(), " and ")
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
@@ -290,6 +297,7 @@ mod tests {
         assert_eq!(artist_variants("A & B"), vec!["A and B", "A plus B", "A + B"]);
         assert!(artist_variants("The Band").is_empty());
         assert!(artist_variants("A plus B").contains(&"A & B".to_string()));
+        assert!(artist_variants("A+B").contains(&"A and B".to_string()));
     }
 
     #[test]
