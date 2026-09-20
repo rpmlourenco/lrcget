@@ -26,7 +26,7 @@ jobs:
         run: cargo check
       - name: Test lyrics fallbacks
         working-directory: src-tauri
-        run: cargo test lrclib::
+        run: 'cargo test lrclib::'
       - name: Build Windows installer
         run: npm run tauri -- build --bundles nsis
       - uses: actions/upload-artifact@v4
