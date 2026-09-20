@@ -49,12 +49,12 @@ tauri-plugin-webdriver = "0.2"
 [features]
 # by default Tauri runs in production mode
 # when `tauri dev` runs it is executed with `cargo run --no-default-features` if `devPath` is an URL
-default = [ "custom-protocol", "dictionary-segmentation" ]
+default = [ "custom-protocol" ]
 # this feature is used used for production builds where `devPath` points to the filesystem
 # DO NOT remove this
 custom-protocol = [ "tauri/custom-protocol" ]
-# Tauri dev disables default features. Keep its build independent of Lindera's
-# external dictionary downloads while retaining Japanese/Korean segmentation in releases.
+# Explicitly enable this for release builds. Tauri dev forwards non-protocol
+# default features even when invoking Cargo with --no-default-features.
 dictionary-segmentation = [ "charabia/japanese", "charabia/korean" ]
 
 [profile.dev.package.kira]

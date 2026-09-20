@@ -18,7 +18,7 @@
 
 **Word Segmentation Command:** `segment_words(text)` in `main.rs` uses Charabia's segmenter (`Segment::segment_str`) and then applies language-agnostic post-processing: segments containing at least one letter/number are kept as tokens, while separator-only segments (spaces/punctuation/symbols) are merged into adjacent tokens.
 
-`tauri dev` builds without Cargo default features and therefore omits Charabia's Japanese and Korean Lindera dictionaries, whose build scripts download data from `lindera.dev`. Release builds enable the `dictionary-segmentation` default feature and retain those language-specific segmenters.
+`tauri dev` omits Charabia's Japanese and Korean Lindera dictionaries, whose build scripts download data from `lindera.dev`. The `dictionary-segmentation` feature is deliberately outside Cargo's default features because the Tauri CLI forwards non-protocol defaults to `tauri dev` even with `--no-default-features`. The Windows release workflow explicitly enables the feature during checking, testing, and packaging, retaining those language-specific segmenters in the installer.
 
 ## Project Structure
 
