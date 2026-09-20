@@ -6,6 +6,8 @@ Vue 3 frontend in Tauri webview. Handles UI, playback, library browsing, lyric e
 
 **Tech Stack**: Vue 3 (`<script setup>`), Vite, Tailwind CSS, Vue Final Modal, Floating Vue, Vue Toastification, TanStack Vue Virtual, CodeMirror, `unplugin-icons` + Iconify Material Design Icons (`@iconify-json/mdi`).
 
+**Local development**: `vite.config.js` excludes `src-tauri/target` from Vite's file watcher. Cargo creates temporary and locked build executables there during `tauri dev`, especially on Windows.
+
 **Code Quality**: ESLint with Vue plugin + Prettier for formatting. Run `npm run lint` to check, `npm run format` to format.
 
 **Core Patterns**:

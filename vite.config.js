@@ -19,6 +19,10 @@ export default defineConfig({
   server: {
     port: 1420,
     strictPort: true,
+    // Rust creates and locks executables here while Tauri is compiling on Windows.
+    watch: {
+      ignored: /[\\/]src-tauri[\\/]target(?:[\\/]|$)/,
+    },
   },
   // to make use of `TAURI_DEBUG` and other env variables
   // https://tauri.studio/v1/api/config#buildconfig.beforedevcommand
