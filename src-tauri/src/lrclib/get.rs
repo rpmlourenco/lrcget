@@ -13,6 +13,7 @@ pub struct RawResponse {
     pub plain_lyrics: Option<String>,
     pub synced_lyrics: Option<String>,
     pub lyricsfile: Option<String>,
+    #[serde(default)]
     instrumental: bool,
     lang: Option<String>,
     isrc: Option<String>,
@@ -132,19 +133,7 @@ async fn request_raw_once(
         }
         .into()),
 
-        reqwest::StatusCode::BAD_REQUEST
-        | reqwest::StatusCode::SERVICE_UNAVAILABLE
-        | reqwest::StatusCode::INTERNAL_SERVER_ERROR => {
-            let error = serde_json::from_value::<ResponseError>(body)?;
-            Err(error.into())
-        }
-
-        _ => Err(ResponseError {
-            status_code: None,
-            error: "UnknownError".to_string(),
-            message: "Unknown error happened".to_string(),
-        }
-        .into()),
+        _ => Err(super::http::api_error(status, &body)),
     }
 }
 
@@ -174,22 +163,41 @@ pub async fn request_raw(
     duration: f64,
     lrclib_instance: &str,
 ) -> Result<RawResponse> {
-    match request_raw_once(title, Some(album_name), artist_name, duration, lrclib_instance).await {
-        Ok(response) => return Ok(response),
-        Err(error) if is_not_found(&error) => {}
+    let mut search_error = None;
+    let exact = match request_raw_once(title, Some(album_name), artist_name, duration, lrclib_instance).await {
+        Ok(response) if has_synced_lyrics(response.synced_lyrics.as_deref(), response.lyricsfile.as_deref()) || response.instrumental => return Ok(response),
+        Ok(response) => Some(response),
+        Err(error) if is_not_found(&error) => None,
+        Err(error) if error.downcast_ref::<super::http::ApiError>().is_some_and(|error| error.status_code == 400) => {
+            search_error = Some(error);
+            None
+        }
         Err(error) => return Err(error),
-    }
+    };
 
     let mut candidates = Vec::new();
     let mut artists = vec![artist_name.to_owned()];
     artists.extend(artist_variants(artist_name));
     artists.dedup();
     for artist in artists {
-        let results = super::search::request(title, "", &artist, "", lrclib_instance).await?;
-        candidates.extend(results.into_items());
+        match super::search::request(title, "", &artist, "", lrclib_instance).await {
+            Ok(results) => candidates.extend(results.into_items()),
+            Err(error) => search_error = Some(error),
+        }
     }
-    if let Some(response) = select_fallback(candidates, title, album_name, artist_name, duration) {
+    let mut fallback = select_fallback(candidates, title, album_name, artist_name, duration);
+    let normalized_title = normalize_name(title);
+    if fallback.is_none() && !normalized_title.is_empty() && !title.trim().eq_ignore_ascii_case(&normalized_title) {
+        match super::search::request(&normalized_title, "", artist_name, "", lrclib_instance).await {
+            Ok(results) => fallback = select_fallback(results.into_items(), title, album_name, artist_name, duration),
+            Err(error) => search_error = Some(error),
+        }
+    }
+    if let Some(response) = choose_response(exact, fallback, duration) {
         return Ok(response);
+    }
+    if let Some(error) = search_error {
+        return Err(error);
     }
     Err(ResponseError {
         status_code: Some(404),
@@ -198,13 +206,46 @@ pub async fn request_raw(
     }.into())
 }
 
-fn normalize_artist(name: &str) -> String {
-    let separator = Regex::new(r"(?i)\b(?:and|plus)\b|[&+]").unwrap();
-    separator
-        .replace_all(&name.to_lowercase(), " and ")
+fn normalize_name(name: &str) -> String {
+    crate::utils::prepare_input(name)
+        .chars()
+        .map(|character| if character.is_alphanumeric() { character } else { ' ' })
+        .collect::<String>()
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn normalize_artist(name: &str) -> String {
+    let separator = Regex::new(r"(?i)\b(?:and|plus)\b|[&+]").unwrap();
+    normalize_name(&separator.replace_all(name, " and "))
+}
+
+fn has_synced_lyrics(synced: Option<&str>, lyricsfile: Option<&str>) -> bool {
+    synced.is_some_and(|text| !text.is_empty())
+        || lyricsfile.is_some_and(|text| {
+            crate::lyricsfile::lyrics_presence_from_lyricsfile(text)
+                .is_ok_and(|presence| presence.has_synced_lyrics)
+        })
+}
+
+fn duration_tier(candidate: Option<f64>, wanted: f64) -> u8 {
+    match candidate {
+        Some(value) if value.round() == wanted.round() => 0,
+        Some(value) if (value - wanted).abs() < 3.0 => 1,
+        _ => 2,
+    }
+}
+
+fn choose_response(exact: Option<RawResponse>, fallback: Option<RawResponse>, duration: f64) -> Option<RawResponse> {
+    match (exact, fallback) {
+        (Some(exact), Some(fallback))
+            if has_synced_lyrics(fallback.synced_lyrics.as_deref(), fallback.lyricsfile.as_deref())
+                && duration_tier(fallback.duration, duration) <= 1
+                && duration_tier(fallback.duration, duration) <= duration_tier(exact.duration, duration) => Some(fallback),
+        (Some(exact), _) => Some(exact),
+        (None, fallback) => fallback,
+    }
 }
 
 fn select_fallback(
@@ -215,8 +256,12 @@ fn select_fallback(
     duration: f64,
 ) -> Option<RawResponse> {
     let normalized_artist = normalize_artist(artist_name);
+    let normalized_title = normalize_name(title);
+    if normalized_title.is_empty() || normalized_artist.is_empty() {
+        return None;
+    }
     let mut ranked = candidates.into_iter().filter_map(|item| {
-        if !item.name.as_deref().is_some_and(|name| name.trim().eq_ignore_ascii_case(title.trim()))
+        if !item.name.as_deref().is_some_and(|name| normalize_name(name) == normalized_title)
             || !item.artist_name.as_deref().is_some_and(|name| normalize_artist(name) == normalized_artist)
         {
             return None;
@@ -229,17 +274,16 @@ fn select_fallback(
             return None;
         }
         let difference = item.duration.map(|value| (value - duration).abs());
-        let tier = match difference {
-            Some(_) if item.duration.unwrap().round() == duration.round() => 0,
-            Some(value) if value < 3.0 => 1,
-            _ if item.plain_lyrics.as_ref().is_some_and(|text| !text.is_empty()) => 2,
-            _ => return None,
-        };
+        let tier = duration_tier(item.duration, duration);
+        if tier == 2 && !item.plain_lyrics.as_ref().is_some_and(|text| !text.is_empty()) {
+            return None;
+        }
+        let has_synced = has_synced_lyrics(item.synced_lyrics.as_deref(), item.lyricsfile.as_deref());
         let album_mismatch = !item.album_name.as_deref().is_some_and(|name| name.eq_ignore_ascii_case(album_name));
-        Some((tier, album_mismatch, difference.unwrap_or(f64::MAX), item))
+        Some((tier, !has_synced, album_mismatch, difference.unwrap_or(f64::MAX), item))
     }).collect::<Vec<_>>();
-    ranked.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)).then_with(|| a.2.total_cmp(&b.2)));
-    ranked.into_iter().next().map(|(tier, _, _, item)| RawResponse {
+    ranked.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)).then_with(|| a.2.cmp(&b.2)).then_with(|| a.3.total_cmp(&b.3)));
+    ranked.into_iter().next().map(|(tier, _, _, _, item)| RawResponse {
         plain_lyrics: item.plain_lyrics,
         synced_lyrics: if tier == 2 { None } else { item.synced_lyrics },
         lyricsfile: if tier == 2 { None } else { item.lyricsfile },
@@ -275,7 +319,7 @@ pub async fn request(
 
 #[cfg(test)]
 mod tests {
-    use super::{artist_variants, select_fallback};
+    use super::{artist_variants, choose_response, select_fallback, RawResponse};
     use crate::lrclib::search::SearchItem;
 
     fn candidate(duration: f64, artist: &str) -> SearchItem {
@@ -327,5 +371,40 @@ mod tests {
         let mut no_plain = candidate(203.0, "A & B");
         no_plain.plain_lyrics = None;
         assert!(select_fallback(vec![wrong_title, no_plain], "Song", "Album", "A & B", 200.0).is_none());
+    }
+
+    #[test]
+    fn synced_match_in_another_album_replaces_plain_match() {
+        let plain = RawResponse {
+            plain_lyrics: Some("plain".to_owned()),
+            synced_lyrics: None,
+            lyricsfile: None,
+            instrumental: false,
+            lang: None, isrc: None, spotify_id: None,
+            name: Some("Time Is on Your Side".to_owned()),
+            album_name: Some("Boogie Wonderland: The Best Of".to_owned()),
+            artist_name: Some("Earth, Wind & Fire".to_owned()),
+            release_date: None,
+            duration: Some(222.506667),
+        };
+        let mut synced = candidate(222.0, "Earth Wind & Fire");
+        synced.name = Some("Time Is On Your Side".to_owned());
+        let mut plain_in_local_album = candidate(222.0, "Earth, Wind & Fire");
+        plain_in_local_album.name = Some("Time Is On Your Side".to_owned());
+        plain_in_local_album.album_name = Some("Boogie Wonderland: The Best Of".to_owned());
+        plain_in_local_album.synced_lyrics = None;
+        let fallback = select_fallback(
+            vec![plain_in_local_album, synced], "Time Is on Your Side", "Boogie Wonderland: The Best Of", "Earth, Wind & Fire", 222.0,
+        );
+        let chosen = choose_response(Some(plain), fallback, 222.0).unwrap();
+        assert_eq!(chosen.duration, Some(222.0));
+        assert!(chosen.synced_lyrics.is_some());
+    }
+
+    #[test]
+    fn apostrophe_styles_match_without_changing_the_song() {
+        let mut item = candidate(200.0, "Singer");
+        item.name = Some("Don’t Stop".to_owned());
+        assert!(select_fallback(vec![item], "Don't Stop", "Album", "Singer", 200.0).is_some());
     }
 }

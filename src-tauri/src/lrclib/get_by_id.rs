@@ -12,6 +12,7 @@ pub struct RawResponse {
     pub plain_lyrics: Option<String>,
     pub synced_lyrics: Option<String>,
     pub lyricsfile: Option<String>,
+    #[serde(default)]
     pub instrumental: bool,
     pub lang: Option<String>,
     pub isrc: Option<String>,
@@ -109,19 +110,7 @@ pub async fn request_raw(id: i64, lrclib_instance: &str) -> Result<RawResponse> 
         }
         .into()),
 
-        reqwest::StatusCode::BAD_REQUEST
-        | reqwest::StatusCode::SERVICE_UNAVAILABLE
-        | reqwest::StatusCode::INTERNAL_SERVER_ERROR => {
-            let error = serde_json::from_value::<ResponseError>(body)?;
-            Err(error.into())
-        }
-
-        _ => Err(ResponseError {
-            status_code: None,
-            error: "UnknownError".to_string(),
-            message: "Unknown error happened".to_string(),
-        }
-        .into()),
+        _ => Err(super::http::api_error(status, &body)),
     }
 }
 
@@ -137,18 +126,6 @@ pub async fn request(id: i64, lrclib_instance: &str) -> Result<Response> {
 
         reqwest::StatusCode::NOT_FOUND => Ok(Response::None),
 
-        reqwest::StatusCode::BAD_REQUEST
-        | reqwest::StatusCode::SERVICE_UNAVAILABLE
-        | reqwest::StatusCode::INTERNAL_SERVER_ERROR => {
-            let error = serde_json::from_value::<ResponseError>(body)?;
-            Err(error.into())
-        }
-
-        _ => Err(ResponseError {
-            status_code: None,
-            error: "UnknownError".to_string(),
-            message: "Unknown error happened".to_string(),
-        }
-        .into()),
+        _ => Err(super::http::api_error(status, &body)),
     }
 }

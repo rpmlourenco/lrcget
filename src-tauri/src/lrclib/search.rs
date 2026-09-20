@@ -3,7 +3,6 @@ use std::time::Duration;
 use anyhow::Result;
 use reqwest;
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -13,6 +12,7 @@ pub(crate) struct SearchItem {
     pub(crate) artist_name: Option<String>,
     pub(crate) album_name: Option<String>,
     pub(crate) duration: Option<f64>,
+    #[serde(default)]
     pub(crate) instrumental: bool,
     pub(crate) plain_lyrics: Option<String>,
     pub(crate) synced_lyrics: Option<String>,
@@ -26,15 +26,6 @@ impl Response {
     pub(crate) fn into_items(self) -> Vec<SearchItem> {
         self.0
     }
-}
-
-#[derive(Error, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-#[error("{error}: {message}")]
-pub struct ResponseError {
-    status_code: Option<u16>,
-    error: String,
-    message: String,
 }
 
 pub async fn request(
@@ -73,18 +64,6 @@ pub async fn request(
             Ok(lrclib_response)
         }
 
-        reqwest::StatusCode::BAD_REQUEST
-        | reqwest::StatusCode::SERVICE_UNAVAILABLE
-        | reqwest::StatusCode::INTERNAL_SERVER_ERROR => {
-            let error = serde_json::from_value::<ResponseError>(body)?;
-            Err(error.into())
-        }
-
-        _ => Err(ResponseError {
-            status_code: None,
-            error: "UnknownError".to_string(),
-            message: "Unknown error happened".to_string(),
-        }
-        .into()),
+        _ => Err(super::http::api_error(status, &body)),
     }
 }
